@@ -1,0 +1,16 @@
+/* Programme de reception Bluetooth via MIT APP Inventor
+doit pouvoir :
+- Se connecter au module Bluetooth
+- Lire les valeurs de resistance du capteur
+- Adapter le gain via le potentiomètre selon la valeur relevée (exemple bouton calibration sur l'APP, puis calibration automatique tout se passe dans le code)
+- Partie commande de l'écran OLED avec l'encodeur rotatoire (= pouvoir afficher le gain par exemple ou différents menus)
+- Afficher la courbe sur l'APP
+- 
+*/
+
+
+/////////////////// INCLUSION DES BIBLIOTHEQUES /////////////////////////
+
+#include <Adafruit_SSD1306.h>               // Bibliothèque de l'écran OLED
+#include <SPI.h>                            // Bibliothèque pour communiquer avec le potentiomètre digital
+#include <SoftwareSerial.h>                 // Bibliothèque pour gérer la communication avec l'appareil bluetooth
