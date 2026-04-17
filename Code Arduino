@@ -1,16 +1,311 @@
-/* Programme de reception Bluetooth via MIT APP Inventor
-doit pouvoir :
-- Se connecter au module Bluetooth
-- Lire les valeurs de resistance du capteur
-- Adapter le gain via le potentiomètre selon la valeur relevée (exemple bouton calibration sur l'APP, puis calibration automatique tout se passe dans le code)
-- Partie commande de l'écran OLED avec l'encodeur rotatoire (= pouvoir afficher le gain par exemple ou différents menus)
-- Afficher la courbe sur l'APP
-- 
-*/
+#include <Adafruit_SSD1306.h>
+#include <SoftwareSerial.h>
+#include <SPI.h>
+
+// ---------------- PINS ----------------
+#define encoderPinA 2
+#define encoderPinB 4
+#define Switch 3
+
+#define rxPin 7
+#define txPin 8
+
+#define ssMCPin 10
+
+#define OLED_ADDR 0x3C
+
+// ---------------- OBJETS ----------------
+Adafruit_SSD1306 display(128, 64, &Wire, -1);
+SoftwareSerial BT(rxPin, txPin);
+
+// ---------------- VARIABLES ----------------
+volatile long encoderValue = 0;
+long lastEncoderValue = 0;
+
+bool mainMenu = true;
+bool button_pressed = false;
+
+int selectedMenu = 0;
+
+// ---------------- FLEX SENSOR ----------------
+const int flexPin = A1;
+const float VCC = 5.0;
+const float R_DIV = 47000.0;
+const float flatResistance = 58000.0;
+const float bendResistance = 125000.0;
+const float R3 = 100000;
+const float R1 = 100000;
+const float R5 = 10000;
+
+float Rflex = 0.0;
+float angle = 0.0;
+float RPot ;
+// ---------------- GRAPHITE SENSOR ----------------
+const int graphitePin = A0;
+const float Rref = 10000.0; // résistance fixe de ton pont diviseur
+
+float Rc = 0.0;
+
+// ---------------- POT ----------------
+#define MCP_WRITE 0b00010001
+int valuePot = 100;
+
+// ---------------- SETUP ----------------
+void setup() {
+
+  pinMode(encoderPinA, INPUT);
+  digitalWrite(encoderPinA, HIGH);
+
+  pinMode(encoderPinB, INPUT);
+  digitalWrite(encoderPinB, HIGH);
+
+  pinMode(Switch, INPUT);
+  digitalWrite(Switch, HIGH);
+
+  pinMode(ssMCPin, OUTPUT);
+  digitalWrite(ssMCPin, HIGH);
+
+  SPI.begin();
+
+  pinMode(flexPin, INPUT);
+  pinMode(graphitePin, INPUT);
+
+  BT.begin(9600);
+  Serial.begin(9600);
+
+  attachInterrupt(0, updateEncoder, CHANGE);
+
+  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
+    while (1);
+  }
+
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+}
+
+// ---------------- LOOP ----------------
+void loop() {
+  BT.println("123|456");
+  RPot = valuePot*10000/255 ; // *10000 car on a un potentiometre MCP41010 (10kOhm max)
+  flexMeasure();
+  graphiteMeasure();
+  sendBluetooth();
+
+  if (mainMenu) {
+    displayMenu();
+    updateSelectedItem();
+    switchButton();
+
+  } else {
+    handleMenu();
+    switchButton();
+
+  }
+
+  delay(100);
+}
+
+// ---------------- MENU ----------------
+const char* menuItems[] = {
+  "Potentiometer",
+  "Flex Sensor",
+  "Graphite Sensor"
+};
+
+void displayMenu() {
+  display.clearDisplay();
+
+  for (int i = 0; i < 3; i++) {
+    if (i == selectedMenu) {
+      display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+    } else {
+      display.setTextColor(SSD1306_WHITE);
+    }
+    display.setCursor(0, i * 10);
+    display.print(menuItems[i]);
+  }
+
+  display.display();
+}
+
+void updateSelectedItem() {
+  encoderValue = abs(encoderValue % 3);
+
+  if (encoderValue != lastEncoderValue) {
+    selectedMenu++;
+    if (selectedMenu == 3) selectedMenu = 0;
+  }
+
+  lastEncoderValue = encoderValue;
+}
+
+// ---------------- BOUTON ----------------
+long lastDebounceTime = 0;
+long debounceDelay = 40;
+
+void switchButton() {
+  if (digitalRead(Switch) == LOW && (millis() - lastDebounceTime) > debounceDelay) {
+    lastDebounceTime = millis();
+
+    if (!button_pressed) {
+      button_pressed = true;
+      mainMenu = !mainMenu;
+    }
+  } else {
+    button_pressed = false;
+  }
+}
+
+// ---------------- ENCODER ----------------
+volatile int lastEncoded = 0;
+
+// attachInterrupt(0, updateEncoder, CHANGE);
+
+void updateEncoder() {
+
+  int MSB = digitalRead(encoderPinA);
+  int LSB = digitalRead(encoderPinB);
+  
+
+  int encoded = (MSB << 1) | LSB;
+  int sum  = (lastEncoded << 2) | encoded;
+
+  if (sum == 0b1101 || sum == 0b0100 || sum == 0b0010 || sum == 0b1011)
+    encoderValue++;
+
+  if (sum == 0b1110 || sum == 0b0111 || sum == 0b0001 || sum == 0b1000)
+    encoderValue--;
+
+  lastEncoded = encoded;
+}
 
 
-/////////////////// INCLUSION DES BIBLIOTHEQUES /////////////////////////
 
-#include <Adafruit_SSD1306.h>               // Bibliothèque de l'écran OLED
-#include <SPI.h>                            // Bibliothèque pour communiquer avec le potentiomètre digital
-#include <SoftwareSerial.h>                 // Bibliothèque pour gérer la communication avec l'appareil bluetooth
+// ---------------- FLEX ----------------
+void flexMeasure() {
+  
+  int flex_Val = analogRead(flexPin);
+  float Vflex = (flex_Val / 1024.0) * VCC;
+
+  if (Vflex <= 0.01)
+    Vflex = 0.01;
+ 
+  Rflex = R_DIV * (VCC / Vflex - 1.0);
+
+  angle = (Rflex - flatResistance) * 90.0 / (bendResistance - flatResistance);
+
+  if (angle < 0) angle = 0;
+  if (angle > 90) angle = 90;
+}
+
+// ---------------- GRAPHITE ----------------
+void graphiteMeasure() {
+
+  float Graph_Val = analogRead(graphitePin);
+  float V_graph = (Graph_Val / 1024.0) * VCC;
+
+
+  // Calcul de Rc
+  if (V_graph <= 0.01) return;
+  Rc = ((1+(R3/RPot))*R1*(VCC/V_graph))-R1-R5 ;
+  Rc = Rc / 1000000.0 ;
+
+  // A mettre en angle
+  //float angle_graph = map(Rc, flatResistance_graph, bendResistance_graph, 0, 90.0);
+
+  if (V_graph<1){ // Si la valeur est inférieure à 30, celà veut dire qu'on se rapproche de la limite inférieure (0) et il est donc nécessaire de réajuster la valeur du potentiomètre digital en conséquence. On a ValeurResBit faible pour des résistances très élevées
+      RPot=3; // On diminue R2 de beaucoup pour amplifier le signal et recevoir une valeur supérieure à 0
+      writePot(RPot); // On envoie la valeur
+    }
+    else if (V_graph>4){ // On utilise cette condition pour des résistances de l'ordre de la centaine de MOhm environ
+      RPot=255; // On choisit une valeur de résistance intermédiaire
+      writePot(RPot); // On envoie la valeur
+    }
+}
+
+// ---------------- POT ----------------
+void writePot(int value) {
+  digitalWrite(ssMCPin, LOW);
+  SPI.transfer(MCP_WRITE);
+  SPI.transfer(value);
+  digitalWrite(ssMCPin, HIGH);
+}
+
+// ---------------- MENU HANDLER ----------------
+void handleMenu() {
+
+  switch (selectedMenu) {
+
+    case 0:
+      displayPot();
+      break;
+
+    case 1:
+      displayFlex();
+      break;
+
+    case 2:
+      displayGraphite();
+      break;
+  }
+}
+
+// ---------------- AFFICHAGE ----------------
+void displayPot() {
+  display.clearDisplay();
+
+  writePot(valuePot);
+
+  display.setCursor(0, 0);
+  display.print("Res Pot:");
+
+  display.setCursor(0, 20);
+  display.print(RPot);
+
+
+  display.display();
+}
+
+void displayFlex() {
+  flexMeasure();
+
+  display.clearDisplay();
+
+  display.setCursor(0, 0);
+  display.print("Flex R:");
+
+  display.setCursor(0, 20);
+  display.print(Rflex);
+
+  display.setCursor(0, 40);
+  display.print(angle);
+
+
+  display.display();
+}
+
+void displayGraphite() {
+  graphiteMeasure();
+
+  display.clearDisplay();
+
+  display.setCursor(0, 0);
+  display.print("Graphite:");
+
+  display.setCursor(0, 20);
+  display.print(Rc, 3);
+
+  display.print(" MOhms") ;
+
+
+  display.display();
+}
+
+// ---------------- BLUETOOTH FORMAT OPTION 2 ----------------
+void sendBluetooth() {
+  BT.print(Rc);
+  BT.print("|");
+  BT.println(Rflex);
+  Serial.print(Rc);
+  Serial.print(Rflex);
+}
